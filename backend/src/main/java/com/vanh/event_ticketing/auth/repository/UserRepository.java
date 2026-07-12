@@ -1,29 +1,25 @@
-// Package: com.vanh.event_ticketing.auth.repository
-// File: UserRepository.java
-//
-// Vai trò: Spring Data JPA repository cho entity User.
-// Extends JpaRepository<User, Long>
-// Annotate @Repository
-//
-// === QUERY METHODS ===
-//
-// Optional<User> findByEmail(String email)
-//   - Dùng trong: login, processOAuth2Login, JWT filter lookup
-//   - Index gợi ý: CREATE UNIQUE INDEX idx_users_email ON users(email)
-//
-// boolean existsByEmail(String email)
-//   - Dùng trong: register — kiểm tra trùng email trước khi tạo
-//   - Nhanh hơn findByEmail vì không load toàn bộ entity
-//
-// Optional<User> findByRefreshToken(String refreshToken)
-//   - Dùng trong: refreshToken endpoint
-//   - Lưu ý: refreshToken lưu dạng plain (hoặc hashed) trong DB
-//   - Gợi ý: nên hash refreshToken khi lưu DB để tránh lộ nếu DB bị dump
-//   - Index gợi ý: CREATE INDEX idx_users_refresh_token ON users(refresh_token)
-//     (không unique vì có thể null khi user đã logout)
-//
-// === GHI CHÚ KỸ THUẬT ===
-// - Spring Data tự generate query từ method name — không cần @Query
-// - Nếu cần update refreshToken: dùng @Modifying @Query để tránh load entity
-//   Ví dụ: @Modifying @Query("UPDATE User u SET u.refreshToken = :token WHERE u.id = :id")
-//   void updateRefreshToken(@Param("id") Long id, @Param("token") String token)
+package com.vanh.event_ticketing.auth.repository;
+
+import com.vanh.event_ticketing.auth.entity.User;
+import java.util.List;
+import java.util.Optional;
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.Pageable;
+import org.springframework.data.jpa.repository.EntityGraph;
+import org.springframework.data.jpa.repository.JpaRepository;
+
+public interface UserRepository extends JpaRepository<User, Long> {
+    boolean existsByEmail(String email);
+
+    @EntityGraph(attributePaths = "role")
+    Optional<User> findById(Long id);
+
+    @EntityGraph(attributePaths = "role")
+    Optional<User> findByEmail(String email);
+
+    @EntityGraph(attributePaths = "role")
+    List<User> findByAssignedEventIdAndRole_NameAndActiveTrue(Long assignedEventId, String roleName);
+
+    @EntityGraph(attributePaths = "role")
+    Page<User> findAllByOrderByCreatedAtDesc(Pageable pageable);
+}

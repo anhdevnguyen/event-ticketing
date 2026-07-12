@@ -1,32 +1,42 @@
-// Package: com.vanh.event_ticketing.gate.entity
-// File: Gate.java
-//
-// Vai trò: JPA Entity ánh xạ bảng "gates" — cổng check-in tại sự kiện.
-// Extends BaseEntity (id, createdAt, updatedAt, version)
-// Annotate @Entity, @Table(name = "gates")
-//
-// === FIELDS ===
-//
-// Event event
-//   - @ManyToOne(fetch = FetchType.LAZY)
-//   - @JoinColumn(name = "event_id", nullable = false)
-//   - Mỗi cổng thuộc về một sự kiện
-//
-// String name
-//   - @Column(nullable = false, length = 100)
-//   - Ví dụ: "Cổng A", "Cổng VIP", "Cổng Chính"
-//
-// String location
-//   - @Column(length = 255)
-//   - Nullable — mô tả vị trí cổng trong khuôn viên
-//   - Ví dụ: "Sảnh tầng trệt, bên trái"
-//
-// boolean active
-//   - @Column(nullable = false)
-//   - Default: true
-//   - false: cổng đã đóng hoặc không sử dụng (soft delete)
-//
-// === GHI CHÚ KỸ THUẬT ===
-// - @Table indexes: (event_id)
-// - Không dùng @Data Lombok
-// - Relationship với CheckInLog: Gate @OneToMany CheckInLog (có thể không cần map ngược)
+package com.vanh.event_ticketing.gate.entity;
+
+import com.vanh.event_ticketing.event.entity.Event;
+import jakarta.persistence.Column;
+import jakarta.persistence.Entity;
+import jakarta.persistence.FetchType;
+import jakarta.persistence.GeneratedValue;
+import jakarta.persistence.GenerationType;
+import jakarta.persistence.Id;
+import jakarta.persistence.JoinColumn;
+import jakarta.persistence.ManyToOne;
+import jakarta.persistence.Table;
+import java.time.Instant;
+import lombok.Getter;
+import lombok.Setter;
+import org.hibernate.annotations.CreationTimestamp;
+import org.hibernate.annotations.UpdateTimestamp;
+
+@Getter
+@Setter
+@Entity
+@Table(name = "gates")
+public class Gate {
+    @Id
+    @GeneratedValue(strategy = GenerationType.IDENTITY)
+    private Long id;
+
+    @ManyToOne(fetch = FetchType.LAZY, optional = false)
+    @JoinColumn(name = "event_id", nullable = false)
+    private Event event;
+
+    @Column(nullable = false, length = 100)
+    private String name;
+
+    @CreationTimestamp
+    @Column(name = "created_at", nullable = false, updatable = false)
+    private Instant createdAt;
+
+    @UpdateTimestamp
+    @Column(name = "updated_at", nullable = false)
+    private Instant updatedAt;
+}

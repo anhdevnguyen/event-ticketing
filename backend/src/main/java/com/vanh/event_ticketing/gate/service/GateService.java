@@ -1,23 +1,13 @@
-// Package: com.vanh.event_ticketing.gate.service
-// File: GateService.java
-//
-// Vai trò: Interface định nghĩa contract nghiệp vụ quản lý cổng check-in.
-//
-// === METHODS ===
-//
-// GateResponse createGate(Long eventId, GateRequest request, Long requesterId)
-//   - Tạo cổng mới cho event
-//   - Kiểm tra event tồn tại và ownership
-//   - active = true mặc định khi tạo
-//
-// GateResponse updateGate(Long gateId, GateRequest request, Long requesterId)
-//   - Cập nhật thông tin cổng (name, location, active)
-//   - Kiểm tra ownership qua event
-//
-// void deleteGate(Long gateId, Long requesterId)
-//   - Xóa cổng (hoặc set active=false nếu đã có log)
-//   - Kiểm tra ownership
-//
-// List<GateResponse> listByEvent(Long eventId)
-//   - Lấy tất cả cổng của một event
-//   - @Transactional(readOnly = true)
+package com.vanh.event_ticketing.gate.service;
+
+import com.vanh.event_ticketing.common.security.CustomUserDetails;
+import com.vanh.event_ticketing.gate.dto.GateRequest;
+import com.vanh.event_ticketing.gate.dto.GateResponse;
+import java.util.List;
+
+public interface GateService {
+    GateResponse create(Long eventId, GateRequest request, CustomUserDetails userDetails);
+    List<GateResponse> list(Long eventId, CustomUserDetails userDetails);
+    GateResponse update(Long id, GateRequest request, CustomUserDetails userDetails);
+    void delete(Long id, CustomUserDetails userDetails);
+}

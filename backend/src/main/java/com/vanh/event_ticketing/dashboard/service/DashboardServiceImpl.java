@@ -1,40 +1,42 @@
-// Package: com.vanh.event_ticketing.dashboard.service
-// File: DashboardServiceImpl.java
-//
-// Vai trò: Implementation của DashboardService.
-// Annotate @Service, @Transactional(readOnly = true)
-//
-// === DEPENDENCIES (inject qua constructor) ===
-// - TicketService ticketService          (KHÔNG inject TicketRepository trực tiếp)
-// - CheckInService checkInService        (KHÔNG inject CheckInLogRepository trực tiếp)
-// - EventService eventService            (để verify event tồn tại)
-//
-// === IMPLEMENTATION NOTES ===
-//
-// getSnapshot(Long eventId):
-//   - Bước 1: Verify event tồn tại
-//     eventService.getEvent(eventId)  -- throw EVENT_NOT_FOUND nếu không có
-//
-//   - Bước 2: Tổng số vé đã bán (gọi qua TicketService)
-//     Gợi ý: thêm method vào TicketService:
-//       long countSoldByEvent(Long eventId) — đếm CONFIRMED + CHECKED_IN
-//       long countCheckedInByEvent(Long eventId) — đếm CHECKED_IN
-//       long countRemainingByEvent(Long eventId) — sum quantityRemaining
-//     Hoặc: một method aggregate duy nhất getSummaryByEvent(eventId)
-//
-//   - Bước 3: Thống kê theo cổng (gọi qua CheckInService)
-//     Gợi ý: thêm method vào CheckInService:
-//       List<GateStats> getGateStatsByEvent(Long eventId)
-//       GateStats: gateId, gateName, checkedInCount
-//
-//   - Bước 4: Build DashboardSnapshotResponse
-//     return new DashboardSnapshotResponse(
-//         eventId, totalSold, totalCheckedIn, totalRemaining, gateStatsList
-//     )
-//
-// === GHI CHÚ KỸ THUẬT ===
-// - Inter-service dependency: DashboardService -> TicketService, CheckInService
-//   Tránh circular dependency: DashboardService không được inject bởi TicketService/CheckInService
-// - @Transactional(readOnly = true) truyền xuống các service được gọi
-// - Nếu performance quan trọng: bypass service layer, dùng native SQL aggregate queries
-//   Nhưng phải viết SQL thủ công và mất đi abstraction
+package com.vanh.event_ticketing.dashboard.service;
+
+import com.vanh.event_ticketing.checkin.repository.CheckInLogRepository;
+import com.vanh.event_ticketing.common.exception.BusinessException;
+import com.vanh.event_ticketing.common.exception.ErrorCode;
+import com.vanh.event_ticketing.common.security.CustomUserDetails;
+import com.vanh.event_ticketing.dashboard.dto.DashboardSnapshotResponse;
+import com.vanh.event_ticketing.event.entity.Event;
+import com.vanh.event_ticketing.event.repository.EventRepository;
+import com.vanh.event_ticketing.event.repository.TicketTypeRepository;
+import com.vanh.event_ticketing.gate.repository.GateRepository;
+import com.vanh.event_ticketing.ticket.repository.TicketRepository;
+import java.util.List;
+import lombok.RequiredArgsConstructor;
+import org.springframework.stereotype.Service;
+
+@Service
+@RequiredArgsConstructor
+public class DashboardServiceImpl implements DashboardService {
+    private final EventRepository eventRepository;
+    private final TicketRepository ticketRepository;
+    private final TicketTypeRepository ticketTypeRepository;
+    private final GateRepository gateRepository;
+    private final CheckInLogRepository checkInLogRepository;
+
+    @Override
+    public DashboardSnapshotResponse snapshot(Long eventId, CustomUserDetails userDetails) {
+        Event event = eventRepository.findById(eventId).orElseThrow(() -> new BusinessException(ErrorCode.EVENT_NOT_FOUND));
+        if (userDetails != null && !event.getOrganizer().getId().equals(userDetails.getId())) {
+            throw new BusinessException(ErrorCode.EVENT_OWNERSHIP_VIOLATION);
+        }
+        long sold = ticketRepository.countByTicketTypeEventIdAndStatusIn(eventId, List.of("CONFIRMED", "CHECKED_IN"));
+        long checked = ticketRepository.countByTicketTypeEventIdAndStatus(eventId, "CHECKED_IN");
+        long remaining = ticketTypeRepository.findByEventIdAndDeletedAtIsNull(eventId).stream()
+                .mapToLong(ticketType -> ticketType.getQuantityRemaining())
+                .sum();
+        List<DashboardSnapshotResponse.GateStats> byGate = gateRepository.findByEventId(eventId).stream()
+                .map(gate -> new DashboardSnapshotResponse.GateStats(gate.getId(), gate.getName(), checkInLogRepository.countByGateIdAndResult(gate.getId(), "SUCCESS")))
+                .toList();
+        return new DashboardSnapshotResponse(eventId, sold, checked, remaining, byGate);
+    }
+}

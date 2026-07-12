@@ -1,36 +1,49 @@
-// Package: com.vanh.event_ticketing.event.controller
-// File: TicketTypeController.java
-//
-// Vai trò: REST Controller quản lý CRUD loại vé (ticket type) của một sự kiện.
-// Annotate @RestController
-//
-// === ENDPOINTS ===
-//
-// GET /api/v1/events/{eventId}/ticket-types
-//   - Public (xem danh sách loại vé)
-//   - Output: List<TicketTypeResponse>
-//   - Gọi: ticketTypeService.listByEvent(eventId)
-//
-// POST /api/v1/events/{eventId}/ticket-types
-//   - Yêu cầu: ORGANIZER chủ event HOẶC ADMIN
-//   - Input: @Valid TicketTypeRequest
-//   - Output: TicketTypeResponse, HTTP 201
-//   - Gọi: ticketTypeService.createTicketType(eventId, request, currentUserId)
-//
-// PUT /api/v1/ticket-types/{id}
-//   - Yêu cầu: ORGANIZER chủ event HOẶC ADMIN
-//   - Input: @Valid TicketTypeRequest
-//   - Output: TicketTypeResponse
-//   - Gọi: ticketTypeService.updateTicketType(id, request, currentUserId)
-//
-// DELETE /api/v1/ticket-types/{id}
-//   - Yêu cầu: ORGANIZER chủ event HOẶC ADMIN
-//   - Output: 204 No Content
-//   - Gọi: ticketTypeService.deleteTicketType(id, currentUserId)
-//   - Service throw BusinessException nếu đã có ticket sold
-//
-// === GHI CHÚ KỸ THUẬT ===
-// - @RequestMapping chia cho 2 prefix: /api/v1/events và /api/v1/ticket-types
-//   Có thể dùng 2 @RequestMapping riêng hoặc define từng @PostMapping/@DeleteMapping với path đầy đủ
-// - Ownership check được thực hiện ở service layer, không phải controller
-// - Lấy currentUserId từ SecurityContext giống EventController
+package com.vanh.event_ticketing.event.controller;
+
+import com.vanh.event_ticketing.common.security.CustomUserDetails;
+import com.vanh.event_ticketing.event.dto.TicketTypeRequest;
+import com.vanh.event_ticketing.event.dto.TicketTypeResponse;
+import com.vanh.event_ticketing.event.service.TicketTypeService;
+import jakarta.validation.Valid;
+import java.util.List;
+import lombok.RequiredArgsConstructor;
+import org.springframework.http.HttpStatus;
+import org.springframework.security.access.prepost.PreAuthorize;
+import org.springframework.security.core.annotation.AuthenticationPrincipal;
+import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PathVariable;
+import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.PutMapping;
+import org.springframework.web.bind.annotation.RequestBody;
+import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.ResponseStatus;
+import org.springframework.web.bind.annotation.RestController;
+
+@RestController
+@RequiredArgsConstructor
+public class TicketTypeController {
+    private final TicketTypeService ticketTypeService;
+
+    @PostMapping("/api/v1/events/{eventId}/ticket-types")
+    @ResponseStatus(HttpStatus.CREATED)
+    @PreAuthorize("hasRole('ORGANIZER')")
+    public TicketTypeResponse create(@PathVariable Long eventId, @Valid @RequestBody TicketTypeRequest request, @AuthenticationPrincipal CustomUserDetails userDetails) {
+        return ticketTypeService.create(eventId, request, userDetails);
+    }
+
+    @GetMapping("/api/v1/events/{eventId}/ticket-types")
+    public List<TicketTypeResponse> list(@PathVariable Long eventId) {
+        return ticketTypeService.list(eventId);
+    }
+
+    @GetMapping("/api/v1/ticket-types/{id}")
+    public TicketTypeResponse get(@PathVariable Long id) {
+        return ticketTypeService.get(id);
+    }
+
+    @PutMapping("/api/v1/ticket-types/{id}")
+    @PreAuthorize("hasRole('ORGANIZER')")
+    public TicketTypeResponse update(@PathVariable Long id, @Valid @RequestBody TicketTypeRequest request, @AuthenticationPrincipal CustomUserDetails userDetails) {
+        return ticketTypeService.update(id, request, userDetails);
+    }
+}

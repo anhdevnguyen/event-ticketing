@@ -1,55 +1,223 @@
-// Package: com.vanh.event_ticketing.auth.service
-// File: AuthServiceImpl.java
-//
-// Vai trò: Implementation của AuthService.
-// Annotate @Service, @Transactional
-//
-// === DEPENDENCIES (inject qua constructor) ===
-// - UserRepository userRepository
-// - RoleRepository roleRepository
-// - JwtTokenProvider jwtTokenProvider
-// - BCryptPasswordEncoder passwordEncoder  (bean trong SecurityConfig)
-// - UserMapper userMapper
-//
-// === IMPLEMENTATION NOTES ===
-//
-// register(RegisterRequest):
-//   - userRepository.existsByEmail() -> throw BusinessException(USER_ALREADY_EXISTS)
-//   - roleRepository.findByName("CUSTOMER") -> assign role
-//   - passwordEncoder.encode(request.getPassword())
-//   - Save User, gọi issueTokensAndSave(user) -> LoginResponse
-//
-// login(LoginRequest):
-//   - userRepository.findByEmail() -> Optional, nếu empty throw INVALID_CREDENTIALS
-//   - Kiểm tra user.isEnabled()
-//   - passwordEncoder.matches(rawPassword, user.getPasswordHash())
-//   - Nếu sai: throw BusinessException(INVALID_CREDENTIALS) — KHÔNG tiết lộ "email không tồn tại"
-//   - issueTokensAndSave(user)
-//
-// refreshToken(RefreshTokenRequest):
-//   - userRepository.findByRefreshToken(token) -> Optional
-//   - jwtTokenProvider.validateToken(token) -> nếu invalid throw TOKEN_EXPIRED
-//   - Rotate: sinh refreshToken mới, lưu lại DB
-//   - Trả về LoginResponse mới
-//
-// logout(Long userId):
-//   - @Transactional
-//   - userRepository.findById(userId) -> set refreshToken = null -> save
-//
-// processOAuth2Login(OAuth2User, String provider):
-//   - Extract attributes: sub/id -> providerId, email, name, picture
-//   - userRepository.findByEmail(email):
-//       + Nếu empty: tạo User mới (role CUSTOMER, enabled=true, passwordHash=null)
-//       + Nếu có: update oauth2Provider, oauth2ProviderId, avatarUrl
-//   - issueTokensAndSave(user)
-//
-// Private helper: issueTokensAndSave(User user) -> LoginResponse
-//   - accessToken = jwtTokenProvider.generateAccessToken(user)
-//   - refreshToken = jwtTokenProvider.generateRefreshToken(user)
-//   - user.setRefreshToken(refreshToken) -> save
-//   - return userMapper.toLoginResponse(accessToken, refreshToken, user)
-//
-// === GHI CHÚ KỸ THUẬT ===
-// - Tất cả DB write nên trong @Transactional
-// - Không log thông tin nhạy cảm (password, token)
-// - BCryptPasswordEncoder strength = 12 (cân bằng security vs performance)
+package com.vanh.event_ticketing.auth.service;
+
+import com.vanh.event_ticketing.auth.dto.LoginRequest;
+import com.vanh.event_ticketing.auth.dto.LoginResponse;
+import com.vanh.event_ticketing.auth.dto.RegisterRequest;
+import com.vanh.event_ticketing.auth.dto.UserResponse;
+import com.vanh.event_ticketing.auth.entity.RefreshToken;
+import com.vanh.event_ticketing.auth.entity.Role;
+import com.vanh.event_ticketing.auth.entity.User;
+import com.vanh.event_ticketing.auth.mapper.UserMapper;
+import com.vanh.event_ticketing.auth.repository.RefreshTokenRepository;
+import com.vanh.event_ticketing.auth.repository.RoleRepository;
+import com.vanh.event_ticketing.auth.repository.UserRepository;
+import com.vanh.event_ticketing.common.exception.BusinessException;
+import com.vanh.event_ticketing.common.exception.ErrorCode;
+import com.vanh.event_ticketing.common.security.CustomUserDetails;
+import com.vanh.event_ticketing.common.security.JwtTokenProvider;
+import com.vanh.event_ticketing.common.util.PageResponse;
+import com.vanh.event_ticketing.event.entity.Event;
+import com.vanh.event_ticketing.event.repository.EventRepository;
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
+import java.security.SecureRandom;
+import java.time.Instant;
+import java.util.Base64;
+import java.util.HexFormat;
+import java.util.List;
+import lombok.RequiredArgsConstructor;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.data.domain.Pageable;
+import org.springframework.security.crypto.password.PasswordEncoder;
+import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
+
+@Service
+@RequiredArgsConstructor
+public class AuthServiceImpl implements AuthService {
+    private static final String CUSTOMER_ROLE = "CUSTOMER";
+    private static final String CHECKIN_STAFF_ROLE = "CHECKIN_STAFF";
+
+    private final UserRepository userRepository;
+    private final RoleRepository roleRepository;
+    private final RefreshTokenRepository refreshTokenRepository;
+    private final EventRepository eventRepository;
+    private final PasswordEncoder passwordEncoder;
+    private final JwtTokenProvider jwtTokenProvider;
+    private final UserMapper userMapper;
+    private final SecureRandom secureRandom = new SecureRandom();
+
+    @Value("${jwt.refresh-token-expiration}")
+    private long refreshTokenExpirationMs;
+
+    @Override
+    @Transactional
+    public AuthResult register(RegisterRequest request) {
+        String email = normalizeEmail(request.email());
+        if (userRepository.existsByEmail(email)) {
+            throw new BusinessException(ErrorCode.EMAIL_ALREADY_EXISTS);
+        }
+
+        Role customerRole = roleRepository.findByName(CUSTOMER_ROLE)
+                .orElseThrow(() -> new BusinessException(ErrorCode.USER_NOT_FOUND));
+
+        User user = new User();
+        user.setEmail(email);
+        user.setPasswordHash(passwordEncoder.encode(request.password()));
+        user.setFullName(request.fullName().trim());
+        user.setRole(customerRole);
+        user.setActive(true);
+        userRepository.save(user);
+        return issueTokens(user);
+    }
+
+    @Override
+    @Transactional
+    public AuthResult login(LoginRequest request) {
+        User user = userRepository.findByEmail(normalizeEmail(request.email()))
+                .orElseThrow(() -> new BusinessException(ErrorCode.INVALID_CREDENTIALS));
+
+        if (!user.isActive()) {
+            throw new BusinessException(ErrorCode.USER_INACTIVE);
+        }
+        if (user.getPasswordHash() == null || !passwordEncoder.matches(request.password(), user.getPasswordHash())) {
+            throw new BusinessException(ErrorCode.INVALID_CREDENTIALS);
+        }
+        return issueTokens(user);
+    }
+
+    @Override
+    @Transactional
+    public AuthResult refresh(String refreshToken) {
+        RefreshToken stored = refreshTokenRepository.findByTokenHash(hash(refreshToken))
+                .orElseThrow(() -> new BusinessException(ErrorCode.INVALID_REFRESH_TOKEN));
+
+        if (stored.isRevoked()) {
+            refreshTokenRepository.revokeAllForUser(stored.getUser().getId());
+            throw new BusinessException(ErrorCode.REFRESH_TOKEN_REUSE_DETECTED);
+        }
+        if (stored.getExpiresAt().isBefore(Instant.now())) {
+            stored.setRevoked(true);
+            throw new BusinessException(ErrorCode.INVALID_REFRESH_TOKEN);
+        }
+        if (!stored.getUser().isActive()) {
+            throw new BusinessException(ErrorCode.USER_INACTIVE);
+        }
+
+        stored.setRevoked(true);
+        return issueTokens(stored.getUser());
+    }
+
+    @Override
+    @Transactional
+    public void logout(String refreshToken) {
+        if (refreshToken == null || refreshToken.isBlank()) {
+            return;
+        }
+        refreshTokenRepository.findByTokenHash(hash(refreshToken)).ifPresent(token -> token.setRevoked(true));
+    }
+
+    @Override
+    public UserResponse me(CustomUserDetails userDetails) {
+        return userMapper.toResponse(userDetails.getUser());
+    }
+
+    @Override
+    @Transactional
+    public UserResponse createStaff(Long eventId, RegisterRequest request, CustomUserDetails userDetails) {
+        Event event = ownedEvent(eventId, userDetails);
+        String email = normalizeEmail(request.email());
+        if (userRepository.existsByEmail(email)) {
+            throw new BusinessException(ErrorCode.EMAIL_ALREADY_EXISTS);
+        }
+        Role role = roleRepository.findByName(CHECKIN_STAFF_ROLE)
+                .orElseThrow(() -> new BusinessException(ErrorCode.USER_NOT_FOUND));
+        User user = new User();
+        user.setEmail(email);
+        user.setPasswordHash(passwordEncoder.encode(request.password()));
+        user.setFullName(request.fullName().trim());
+        user.setRole(role);
+        user.setAssignedEventId(event.getId());
+        user.setActive(true);
+        return userMapper.toResponse(userRepository.save(user));
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public List<UserResponse> listStaff(Long eventId, CustomUserDetails userDetails) {
+        ownedEvent(eventId, userDetails);
+        return userRepository.findByAssignedEventIdAndRole_NameAndActiveTrue(eventId, CHECKIN_STAFF_ROLE).stream()
+                .map(userMapper::toResponse)
+                .toList();
+    }
+
+    @Override
+    @Transactional
+    public void removeStaff(Long eventId, Long userId, CustomUserDetails userDetails) {
+        ownedEvent(eventId, userDetails);
+        User user = userRepository.findById(userId).orElseThrow(() -> new BusinessException(ErrorCode.USER_NOT_FOUND));
+        if (!CHECKIN_STAFF_ROLE.equals(user.getRole().getName()) || !eventId.equals(user.getAssignedEventId())) {
+            throw new BusinessException(ErrorCode.USER_NOT_FOUND);
+        }
+        user.setActive(false);
+        user.setAssignedEventId(null);
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public PageResponse<UserResponse> listUsers(Pageable pageable) {
+        return PageResponse.from(userRepository.findAllByOrderByCreatedAtDesc(pageable).map(userMapper::toResponse));
+    }
+
+    @Override
+    @Transactional
+    public UserResponse setUserStatus(Long id, boolean active) {
+        User user = userRepository.findById(id).orElseThrow(() -> new BusinessException(ErrorCode.USER_NOT_FOUND));
+        user.setActive(active);
+        return userMapper.toResponse(user);
+    }
+
+    private AuthResult issueTokens(User user) {
+        String accessToken = jwtTokenProvider.generateAccessToken(user);
+        String refreshToken = newRefreshToken();
+
+        RefreshToken entity = new RefreshToken();
+        entity.setUser(user);
+        entity.setTokenHash(hash(refreshToken));
+        entity.setExpiresAt(Instant.now().plusMillis(refreshTokenExpirationMs));
+        refreshTokenRepository.save(entity);
+
+        return new AuthResult(new LoginResponse(accessToken, userMapper.toResponse(user)), refreshToken);
+    }
+
+    private String newRefreshToken() {
+        byte[] bytes = new byte[48];
+        secureRandom.nextBytes(bytes);
+        return Base64.getUrlEncoder().withoutPadding().encodeToString(bytes);
+    }
+
+    private String hash(String token) {
+        try {
+            byte[] digest = MessageDigest.getInstance("SHA-256").digest(token.getBytes(StandardCharsets.UTF_8));
+            return HexFormat.of().formatHex(digest);
+        } catch (NoSuchAlgorithmException ex) {
+            throw new IllegalStateException(ex);
+        }
+    }
+
+    private String normalizeEmail(String email) {
+        return email.trim().toLowerCase();
+    }
+
+    private Event ownedEvent(Long eventId, CustomUserDetails userDetails) {
+        Event event = eventRepository.findById(eventId).orElseThrow(() -> new BusinessException(ErrorCode.EVENT_NOT_FOUND));
+        if (event.getDeletedAt() != null) {
+            throw new BusinessException(ErrorCode.EVENT_NOT_FOUND);
+        }
+        if (!event.getOrganizer().getId().equals(userDetails.getId())) {
+            throw new BusinessException(ErrorCode.EVENT_OWNERSHIP_VIOLATION);
+        }
+        return event;
+    }
+}

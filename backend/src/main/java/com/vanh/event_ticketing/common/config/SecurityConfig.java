@@ -1,48 +1,46 @@
-// Package: com.vanh.event_ticketing.common.config
-// File: SecurityConfig.java
-//
-// Vai trò: Cấu hình Spring Security toàn bộ ứng dụng.
-// Annotate @Configuration, @EnableWebSecurity, @EnableMethodSecurity (cho @PreAuthorize)
-//
-// === BEANS ===
-//
-// SecurityFilterChain filterChain(HttpSecurity http)
-//   - Disable CSRF (REST API + JWT, không dùng session)
-//   - Session management: STATELESS
-//   - CORS: corsConfigurationSource() bean
-//   - Thêm JwtAuthenticationFilter trước UsernamePasswordAuthenticationFilter
-//
-//   Public endpoints (permitAll):
-//     POST /api/v1/auth/register
-//     POST /api/v1/auth/login
-//     POST /api/v1/auth/refresh
-//     GET  /api/v1/events (danh sách sự kiện public)
-//     GET  /api/v1/events/{id}
-//     GET  /api/v1/events/{id}/ticket-types
-//     /ws/**  (WebSocket endpoint)
-//     /actuator/health
-//
-//   Protected endpoints:
-//     /api/v1/tickets/**      -> AUTHENTICATED
-//     /api/v1/checkin/**      -> CHECKIN_STAFF, ORGANIZER, ADMIN
-//     /api/v1/dashboard/**    -> ORGANIZER, ADMIN
-//     Còn lại                 -> AUTHENTICATED
-//
-// BCryptPasswordEncoder passwordEncoder()
-//   - @Bean
-//   - strength = 12
-//
-// AuthenticationManager authenticationManager(AuthenticationConfiguration config)
-//   - @Bean — expose AuthenticationManager để dùng trong AuthServiceImpl
-//
-// OAuth2 Login:
-//   - http.oauth2Login()
-//   - successHandler: OAuth2LoginSuccessHandler (redirect về frontend với JWT)
-//   - userService: CustomOAuth2UserService (upsert user khi OAuth2 login)
-//
-// === GHI CHÚ KỸ THUẬT ===
-// - @EnableMethodSecurity(prePostEnabled = true) để @PreAuthorize hoạt động
-// - Spring Security 6: không dùng WebSecurityConfigurerAdapter (deprecated)
-// - Thứ tự filter: JwtAuthenticationFilter -> UsernamePasswordAuthenticationFilter
-// - Exception handling: authenticationEntryPoint (401), accessDeniedHandler (403)
-//   -> Trả về JSON format thay vì HTML
+package com.vanh.event_ticketing.common.config;
+
+import com.vanh.event_ticketing.common.security.JwtAuthenticationFilter;
+import lombok.RequiredArgsConstructor;
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
+import org.springframework.http.HttpMethod;
+import org.springframework.security.config.annotation.method.configuration.EnableMethodSecurity;
+import org.springframework.security.config.annotation.web.builders.HttpSecurity;
+import org.springframework.security.config.annotation.web.configuration.EnableWebSecurity;
+import org.springframework.security.config.annotation.web.configurers.AbstractHttpConfigurer;
+import org.springframework.security.config.http.SessionCreationPolicy;
+import org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder;
+import org.springframework.security.crypto.password.PasswordEncoder;
+import org.springframework.security.web.SecurityFilterChain;
+import org.springframework.security.web.authentication.UsernamePasswordAuthenticationFilter;
+
+@Configuration
+@EnableWebSecurity
+@EnableMethodSecurity
+@RequiredArgsConstructor
+public class SecurityConfig {
+    private final JwtAuthenticationFilter jwtAuthenticationFilter;
+
+    @Bean
+    public SecurityFilterChain filterChain(HttpSecurity http) throws Exception {
+        http
+                .csrf(AbstractHttpConfigurer::disable)
+                .cors(cors -> { })
+                .sessionManagement(session -> session.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
+                .authorizeHttpRequests(auth -> auth
+                        .requestMatchers("/api/v1/auth/login", "/api/v1/auth/register", "/api/v1/auth/refresh", "/api/v1/auth/google", "/api/v1/auth/google/**").permitAll()
+                        .requestMatchers(HttpMethod.GET, "/api/v1/events", "/api/v1/events/*", "/api/v1/events/*/ticket-types", "/api/v1/ticket-types/*").permitAll()
+                        .requestMatchers("/ws/**").permitAll()
+                        .requestMatchers("/actuator/health", "/api-docs/**", "/swagger-ui.html", "/swagger-ui/**").permitAll()
+                        .anyRequest().authenticated()
+                )
+                .addFilterBefore(jwtAuthenticationFilter, UsernamePasswordAuthenticationFilter.class);
+        return http.build();
+    }
+
+    @Bean
+    public PasswordEncoder passwordEncoder() {
+        return new BCryptPasswordEncoder();
+    }
+}

@@ -94,7 +94,15 @@ Filtering: dùng query param riêng theo từng field hỗ trợ, khai báo tạ
 ```json
 // Request: không cần body, refresh token lấy từ cookie HttpOnly
 // 200 OK
-{ "accessToken": "eyJhbGciOi..." }
+{
+  "accessToken": "eyJhbGciOi...",
+  "user": {
+    "id": 1,
+    "email": "organizer@example.com",
+    "role": "ORGANIZER",
+    "fullName": "Organizer"
+  }
+}
 // Set-Cookie: refresh_token=<token_mới>; ... (rotation — token cũ bị vô hiệu hoá)
 ```
 

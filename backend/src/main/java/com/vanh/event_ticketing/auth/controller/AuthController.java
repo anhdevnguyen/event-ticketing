@@ -1,46 +1,129 @@
-// Package: com.vanh.event_ticketing.auth.controller
-// File: AuthController.java
-//
-// Vai trò: REST Controller xử lý tất cả các endpoint xác thực người dùng.
-// Annotate @RestController, @RequestMapping("/api/v1/auth")
-//
-// === ENDPOINTS ===
-//
-// POST /api/v1/auth/register
-//   - Input: RegisterRequest (email, password, displayName)
-//   - Output: LoginResponse (accessToken, refreshToken, user info)
-//   - Gọi: authService.register(request)
-//   - Public endpoint (không cần authentication)
-//
-// POST /api/v1/auth/login
-//   - Input: LoginRequest (email @NotBlank @Email, password @NotBlank @Size(min=8))
-//   - Output: LoginResponse
-//   - Gọi: authService.login(request)
-//   - Public endpoint
-//   - Validate bằng @Valid
-//
-// POST /api/v1/auth/refresh
-//   - Input: RefreshTokenRequest (refreshToken @NotBlank)
-//   - Output: LoginResponse (access token mới)
-//   - Gọi: authService.refreshToken(request)
-//   - Public endpoint (vì access token đã hết hạn)
-//
-// POST /api/v1/auth/logout
-//   - Input: RefreshTokenRequest hoặc lấy từ SecurityContext
-//   - Output: 204 No Content
-//   - Gọi: authService.logout(userId)
-//   - Yêu cầu: AUTHENTICATED (Bearer token còn hạn)
-//   - Xóa refreshToken trong DB
-//
-// GET /api/v1/auth/oauth2/callback/google  (hoặc xử lý qua OAuth2LoginSuccessHandler)
-//   - Xử lý callback từ Google OAuth2
-//   - Gọi: authService.processOAuth2Login(oAuth2User)
-//   - Redirect về frontend với token sau khi thành công
-//   - Nên implement OAuth2AuthenticationSuccessHandler riêng thay vì endpoint trực tiếp
-//
-// === GHI CHÚ KỸ THUẬT ===
-// - Inject AuthService qua constructor injection
-// - Dùng @Valid trên tất cả @RequestBody
-// - ResponseEntity<LoginResponse> cho các endpoint trả token
-// - OAuth2 callback nên được handle bởi Spring Security filter, không phải Controller thuần
-// - CORS header được handle ở SecurityConfig / CorsConfig
+package com.vanh.event_ticketing.auth.controller;
+
+import com.vanh.event_ticketing.auth.dto.LoginRequest;
+import com.vanh.event_ticketing.auth.dto.LoginResponse;
+import com.vanh.event_ticketing.auth.dto.RegisterRequest;
+import com.vanh.event_ticketing.auth.dto.UserResponse;
+import com.vanh.event_ticketing.auth.service.AuthService;
+import com.vanh.event_ticketing.common.exception.BusinessException;
+import com.vanh.event_ticketing.common.exception.ErrorCode;
+import com.vanh.event_ticketing.common.security.CustomUserDetails;
+import jakarta.servlet.http.Cookie;
+import jakarta.servlet.http.HttpServletRequest;
+import jakarta.validation.Valid;
+import java.time.Duration;
+import lombok.RequiredArgsConstructor;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.http.HttpHeaders;
+import org.springframework.http.ResponseCookie;
+import org.springframework.http.ResponseEntity;
+import org.springframework.security.core.annotation.AuthenticationPrincipal;
+import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.RequestBody;
+import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RestController;
+
+@RestController
+@RequestMapping("/api/v1/auth")
+@RequiredArgsConstructor
+public class AuthController {
+    private static final String REFRESH_COOKIE = "refresh_token";
+
+    private final AuthService authService;
+
+    @Value("${jwt.refresh-token-expiration}")
+    private long refreshTokenExpirationMs;
+
+    @Value("${cookie.secure}")
+    private boolean cookieSecure;
+
+    @PostMapping("/register")
+    public ResponseEntity<LoginResponse> register(@Valid @RequestBody RegisterRequest request) {
+        AuthService.AuthResult result = authService.register(request);
+        return withRefreshCookie(result.loginResponse(), result.refreshToken());
+    }
+
+    @PostMapping("/login")
+    public ResponseEntity<LoginResponse> login(@Valid @RequestBody LoginRequest request) {
+        AuthService.AuthResult result = authService.login(request);
+        return withRefreshCookie(result.loginResponse(), result.refreshToken());
+    }
+
+    @PostMapping("/refresh")
+    public ResponseEntity<LoginResponse> refresh(HttpServletRequest request) {
+        AuthService.AuthResult result = authService.refresh(readRefreshToken(request));
+        return ResponseEntity.ok()
+                .header(HttpHeaders.SET_COOKIE, refreshCookie(result.refreshToken()).toString())
+                .body(result.loginResponse());
+    }
+
+    @PostMapping("/logout")
+    public ResponseEntity<Void> logout(HttpServletRequest request) {
+        authService.logout(readOptionalRefreshToken(request));
+        return ResponseEntity.noContent()
+                .header(HttpHeaders.SET_COOKIE, clearRefreshCookie().toString())
+                .build();
+    }
+
+    @GetMapping("/me")
+    public UserResponse me(@AuthenticationPrincipal CustomUserDetails userDetails) {
+        return authService.me(userDetails);
+    }
+
+    @GetMapping("/google")
+    public ResponseEntity<Void> google() {
+        return ResponseEntity.status(302).header(HttpHeaders.LOCATION, "/oauth2/authorization/google").build();
+    }
+
+    @GetMapping("/google/callback")
+    public ResponseEntity<Void> googleCallback() {
+        throw new BusinessException(ErrorCode.GOOGLE_OAUTH_NOT_CONFIGURED);
+    }
+
+    private ResponseEntity<LoginResponse> withRefreshCookie(LoginResponse body, String refreshToken) {
+        return ResponseEntity.ok()
+                .header(HttpHeaders.SET_COOKIE, refreshCookie(refreshToken).toString())
+                .body(body);
+    }
+
+    private String readRefreshToken(HttpServletRequest request) {
+        String token = readOptionalRefreshToken(request);
+        if (token == null) {
+            throw new BusinessException(ErrorCode.INVALID_REFRESH_TOKEN);
+        }
+        return token;
+    }
+
+    private String readOptionalRefreshToken(HttpServletRequest request) {
+        if (request.getCookies() == null) {
+            return null;
+        }
+        for (Cookie cookie : request.getCookies()) {
+            if (REFRESH_COOKIE.equals(cookie.getName())) {
+                return cookie.getValue();
+            }
+        }
+        return null;
+    }
+
+    private ResponseCookie refreshCookie(String refreshToken) {
+        return ResponseCookie.from(REFRESH_COOKIE, refreshToken)
+                .httpOnly(true)
+                .secure(cookieSecure)
+                .sameSite("Strict")
+                .path("/api/v1/auth")
+                .maxAge(Duration.ofMillis(refreshTokenExpirationMs))
+                .build();
+    }
+
+    private ResponseCookie clearRefreshCookie() {
+        return ResponseCookie.from(REFRESH_COOKIE, "")
+                .httpOnly(true)
+                .secure(cookieSecure)
+                .sameSite("Strict")
+                .path("/api/v1/auth")
+                .maxAge(Duration.ZERO)
+                .build();
+    }
+}

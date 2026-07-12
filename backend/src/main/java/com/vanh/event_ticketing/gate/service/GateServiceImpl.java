@@ -1,44 +1,65 @@
-// Package: com.vanh.event_ticketing.gate.service
-// File: GateServiceImpl.java
-//
-// Vai trò: Implementation của GateService.
-// Annotate @Service, @Transactional
-//
-// === DEPENDENCIES (inject qua constructor) ===
-// - GateRepository gateRepository
-// - EventRepository eventRepository
-//
-// === IMPLEMENTATION NOTES ===
-//
-// createGate(Long eventId, GateRequest request, Long requesterId):
-//   - event = eventRepository.findById(eventId) -> throw EVENT_NOT_FOUND
-//   - checkOwnership(event, requesterId) — kiểm tra organizer hoặc ADMIN
-//   - Map request -> Gate entity
-//   - gate.setEvent(event)
-//   - gate.setActive(request.isActive() != null ? request.isActive() : true)
-//   - save và return response
-//
-// updateGate(Long gateId, GateRequest request, Long requesterId):
-//   - gate = gateRepository.findById(gateId) -> throw GATE_NOT_FOUND (thêm vào ErrorCode)
-//   - checkOwnership(gate.getEvent(), requesterId)
-//   - Update name, location, active
-//   - save và return
-//
-// deleteGate(Long gateId, Long requesterId):
-//   - gate = findById -> throw if not found
-//   - checkOwnership(gate.getEvent(), requesterId)
-//   - Gợi ý: kiểm tra checkinLogRepository.existsByGateId(gateId)
-//     Nếu có log: set active=false và save (soft delete)
-//     Nếu không có log: hard delete
-//
-// listByEvent(Long eventId):
-//   - @Transactional(readOnly = true)
-//   - gateRepository.findByEventId(eventId)
-//   - Map -> list response
-//
-// Private checkOwnership(Event event, Long requesterId):
-//   - Throw FORBIDDEN nếu event.organizer.id != requesterId và không phải ADMIN
-//
-// === GHI CHÚ KỸ THUẬT ===
-// - Dependency vào CheckInLogRepository cho deleteGate có thể cross-module
-//   Cân nhắc: thêm method vào CheckInService để check, hoặc chấp nhận dependency
+package com.vanh.event_ticketing.gate.service;
+
+import com.vanh.event_ticketing.common.exception.BusinessException;
+import com.vanh.event_ticketing.common.exception.ErrorCode;
+import com.vanh.event_ticketing.common.security.CustomUserDetails;
+import com.vanh.event_ticketing.event.entity.Event;
+import com.vanh.event_ticketing.event.repository.EventRepository;
+import com.vanh.event_ticketing.gate.dto.GateRequest;
+import com.vanh.event_ticketing.gate.dto.GateResponse;
+import com.vanh.event_ticketing.gate.entity.Gate;
+import com.vanh.event_ticketing.gate.repository.GateRepository;
+import java.util.List;
+import lombok.RequiredArgsConstructor;
+import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
+
+@Service
+@RequiredArgsConstructor
+public class GateServiceImpl implements GateService {
+    private final EventRepository eventRepository;
+    private final GateRepository gateRepository;
+
+    @Override
+    @Transactional
+    public GateResponse create(Long eventId, GateRequest request, CustomUserDetails userDetails) {
+        Event event = eventRepository.findById(eventId).orElseThrow(() -> new BusinessException(ErrorCode.EVENT_NOT_FOUND));
+        requireOwner(event, userDetails);
+        Gate gate = new Gate();
+        gate.setEvent(event);
+        gate.setName(request.name().trim());
+        return toResponse(gateRepository.save(gate));
+    }
+
+    @Override
+    public List<GateResponse> list(Long eventId, CustomUserDetails userDetails) {
+        return gateRepository.findByEventId(eventId).stream().map(this::toResponse).toList();
+    }
+
+    @Override
+    @Transactional
+    public GateResponse update(Long id, GateRequest request, CustomUserDetails userDetails) {
+        Gate gate = gateRepository.findById(id).orElseThrow(() -> new BusinessException(ErrorCode.GATE_NOT_FOUND));
+        requireOwner(gate.getEvent(), userDetails);
+        gate.setName(request.name().trim());
+        return toResponse(gate);
+    }
+
+    @Override
+    @Transactional
+    public void delete(Long id, CustomUserDetails userDetails) {
+        Gate gate = gateRepository.findById(id).orElseThrow(() -> new BusinessException(ErrorCode.GATE_NOT_FOUND));
+        requireOwner(gate.getEvent(), userDetails);
+        gateRepository.delete(gate);
+    }
+
+    private void requireOwner(Event event, CustomUserDetails userDetails) {
+        if (!event.getOrganizer().getId().equals(userDetails.getId())) {
+            throw new BusinessException(ErrorCode.EVENT_OWNERSHIP_VIOLATION);
+        }
+    }
+
+    private GateResponse toResponse(Gate gate) {
+        return new GateResponse(gate.getId(), gate.getEvent().getId(), gate.getName());
+    }
+}

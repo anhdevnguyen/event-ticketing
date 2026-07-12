@@ -8,6 +8,7 @@
 .env
 .env.local
 .env.*.local
+backend/src/main/resources/application-local.yml
 
 # OS / Editor 
 .DS_Store

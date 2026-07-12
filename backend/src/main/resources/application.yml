@@ -1,0 +1,101 @@
+# application.yml — Spring Boot 3.5.x
+# Mọi secret/credential dùng ${ENV_VAR} placeholder — KHÔNG hardcode giá trị thật.
+# Local dev: tiêm qua docker-compose.yml environment block.
+# Production: tiêm qua Render Environment Variables.
+# Xem docs/11-DEPLOYMENT.md mục 2 để biết danh sách đầy đủ biến môi trường cần thiết.
+
+spring:
+  application:
+    name: event-ticketing
+
+  # Datasource
+  datasource:
+    url: ${DATABASE_URL:${SPRING_DATASOURCE_URL:}}
+    username: ${DATABASE_USERNAME:${SPRING_DATASOURCE_USERNAME:}}
+    driver-class-name: org.postgresql.Driver
+    password: ${DATABASE_PASSWORD:${SPRING_DATASOURCE_PASSWORD:}}
+
+  # JPA / Hibernate
+  jpa:
+    hibernate:
+      ddl-auto: validate        # Chỉ validate schema, KHÔNG tự tạo/sửa bảng
+    show-sql: false             # Tắt SQL log (bật tạm thời khi debug local: true)
+    open-in-view: false         # Tắt OSIV pattern — tránh N+1 query ẩn
+    properties:
+      hibernate:
+        dialect: org.hibernate.dialect.PostgreSQLDialect
+        format_sql: false
+
+  # Flyway Migration
+  flyway:
+    enabled: ${SPRING_FLYWAY_ENABLED:true}
+    url: ${DATABASE_URL_DIRECT:${DATABASE_URL:${SPRING_DATASOURCE_URL:}}}
+    user: ${DATABASE_USERNAME:${SPRING_DATASOURCE_USERNAME:}}
+    password: ${DATABASE_PASSWORD:${SPRING_DATASOURCE_PASSWORD:}}
+    locations: classpath:db/migration
+    baseline-on-migrate: false   # KHÔNG tự tạo baseline — migration phải sạch từ V1
+
+# Server
+server:
+  port: 8080
+  error:
+    include-message: never      # Không lộ message lỗi kỹ thuật trong response mặc định Spring
+    include-stacktrace: never
+
+# JWT 
+jwt:
+  secret: ${JWT_SECRET}
+  access-token-expiration: ${JWT_ACCESS_TOKEN_EXPIRATION:900000}       # 15 minutes (ms)
+  refresh-token-expiration: ${JWT_REFRESH_TOKEN_EXPIRATION:604800000}  # 7 days (ms)
+
+# CORS
+cors:
+  allowed-origins: ${CORS_ALLOWED_ORIGINS:http://localhost:5173}
+
+# Cookie
+cookie:
+  # true  = Production HTTPS (Secure flag bật — cookie chỉ gửi qua HTTPS)
+  # false = Local dev HTTP   (Secure flag tắt — browser mới gửi được cookie)
+  secure: ${COOKIE_SECURE:true}
+
+# Cloudinary
+cloudinary:
+  cloud-name: ${CLOUDINARY_CLOUD_NAME:}
+  api-key: ${CLOUDINARY_API_KEY:}
+  api-secret: ${CLOUDINARY_API_SECRET:}
+
+# Oauth2 Google
+oauth2:
+  google:
+    client-id: ${GOOGLE_CLIENT_ID:}
+    client-secret: ${GOOGLE_CLIENT_SECRET:}
+
+# Spring Boot Actuator (Health Check cho Render)
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health
+  endpoint:
+    health:
+      show-details: never     # Không lộ chi tiết DB/disk ra public endpoint
+
+# Logging
+logging:
+  level:
+    root: INFO
+    com.vanh.event_ticketing: INFO
+    org.springframework.security: WARN  # Giảm noise log từ Spring Security
+    org.flywaydb: INFO                  # Hiển thị tiến trình Flyway migration
+  pattern:
+    # Local dev: text thường dễ đọc trên terminal
+    # Production: JSON structured — cấu hình qua logback-spring.xml (xem docs/11-DEPLOYMENT.md mục 6)
+    console: "%d{HH:mm:ss} %-5level [%thread] %logger{36} - %msg%n"
+
+# SpringDoc OpenAPI / Swagger UI
+springdoc:
+  api-docs:
+    path: /api-docs
+  swagger-ui:
+    path: /swagger-ui.html
+    enabled: true
