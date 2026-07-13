@@ -32,5 +32,8 @@ COPY --from=build /app/target/*.jar app.jar
 
 EXPOSE 8080
 
+# Giới hạn JVM heap để tránh chiếm hết RAM VPS (1 Core / 2GB, chạy song song 2 backend)
+ENV JAVA_OPTS="-Xms256m -Xmx512m -XX:+UseSerialGC -XX:MaxMetaspaceSize=128m"
+
 # Khởi động Spring Boot
-ENTRYPOINT ["java", "-jar", "app.jar"]
+ENTRYPOINT ["sh", "-c", "java $JAVA_OPTS -jar app.jar"]
